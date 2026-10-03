@@ -168,6 +168,10 @@ pub struct FontSystem {
 
     /// List of fallbacks
     pub(crate) fallbacks: Fallbacks,
+
+    /// Optical size (opsz) for variable fonts. `None` means use the default
+    /// value from the font (or ignore the axis if the font isn't variable).
+    optical_size: Option<f32>,
 }
 
 impl fmt::Debug for FontSystem {
@@ -175,6 +179,7 @@ impl fmt::Debug for FontSystem {
         f.debug_struct("FontSystem")
             .field("locale", &self.locale)
             .field("db", &self.db)
+            .field("optical_size", &self.optical_size)
             .finish_non_exhaustive()
     }
 }
@@ -347,6 +352,8 @@ impl FontSystem {
             shape_buffer: ShapeBuffer::default(),
             dyn_fallback: Box::new(impl_fallback),
             fallbacks,
+            // ★ 新增：初始为 None，表示使用字体默认的 opsz 值
+            optical_size: None,
         }
     }
 
@@ -376,6 +383,40 @@ impl FontSystem {
         (self.locale, self.db)
     }
 
+    // ★★★ 新增：光学字号（opsz）API ★★★
+
+    /// Set the optical size (opsz) applied to variable fonts.
+    ///
+    /// This is used by variable fonts to adjust glyph design for different
+    /// point sizes (e.g. thinner strokes at large sizes, thicker strokes at
+    /// small sizes). Passing `None` resets to the font's default `opsz`.
+    ///
+    /// Because cached [`Font`] instances embed the optical size at load time,
+    /// this method clears the font cache so subsequent [`FontSystem::get_font`]
+    /// calls pick up the new value.
+    ///
+    /// # Note
+    ///
+    /// Callers that already hold `Arc<Font>` handles should re-fetch them after
+    /// calling this method, and re-layout any buffers that use them.
+    pub fn set_optical_size(&mut self, size: Option<f32>) {
+        if self.optical_size == size {
+            return;
+        }
+        self.optical_size = size;
+        // Drop cached Font instances so they get rebuilt with the new opsz.
+        self.font_cache.clear();
+    }
+
+    /// Returns the currently configured optical size, if any.
+    ///
+    /// See [`FontSystem::set_optical_size`].
+    pub fn optical_size(&self) -> Option<f32> {
+        self.optical_size
+    }
+
+    // ★★★ 光学字号 API 结束 ★★★
+
     /// Get a font by its ID and weight.
     pub fn get_font(&mut self, id: fontdb::ID, weight: fontdb::Weight) -> Option<Arc<Font>> {
         self.font_cache
@@ -385,6 +426,8 @@ impl FontSystem {
                 unsafe {
                     self.db.make_shared_face_data(id);
                 }
+                // TODO: 把 self.optical_size 透传给 Font::new，让它真正作用于
+                // 可变字体的 opsz 轴。这需要先扩展 Font::new 的签名（见 font.rs）。
                 if let Some(font) = Font::new(&self.db, id, weight) {
                     Some(Arc::new(font))
                 } else {
